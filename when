@@ -1,0 +1,92 @@
+#!/bin/bash
+
+## 20171206, rmueller: "resources not available" on partition "compute" (showbf); tweaked to show partition "tiny" instead
+## 20171127, rmueller: also show free space in work directory
+## 20170817, rmueller: differentiated ressource availability; horribly messy and improvised for now, needs rewrite in Perl
+## 20170808, rmueller: show available ressources (nodes, estimated time to start)
+## 20170704, rmueller: Adapted to BinAC (load module system/moab)
+## 20170511, rmueller: Extended to get information on running jobs
+## 20170510, rmueller: Get actual status on pending jobs (showq -i)
+##
+## Check estimated start time (showstart), return job id and job name
+## Attention: script relies on Job IDs always being 8 digits in length (7 on BinAC?)
+## sometimes followed by an asterisk (indicates that the job has a job reservation created for it)
+## ToDo: make more flexible
+## Hint: also see, e.g. 'mjobctl -q diag <JOB-ID>' for more/other options
+## Hint: showstart estimates might be more accurate with 'showstart -f <JOB-ID>'
+##
+## Help on awk expressions in checkjob line: assign shell variable $i to awk variable jobid,
+## only consider lines starting with AName, print out jobid and job name
+
+
+module purge
+module load system/moab
+ 
+
+# show available ressources on compute nodes and job submission offset
+printf '\nVery general ressource availability and estimated start offset (based on \"showbf\")\n'
+printf '##################################################################################\n'
+#showbf -a ${LOGNAME} -p compute | awk '($1 ~ /compute/) {printf "\n\t" $3 " nodes (" $2 " tasks) available; start offset: " $5 "\n"}'
+showbf -a ${LOGNAME} -p tiny | awk '($1 ~ /tiny/) {printf "\n\t" $3 " nodes (" $2 " tasks) available; start offset: " $5 "\n"}'
+
+
+# show more specific ressource list; very messy for now (as awk cannot backreference; needs rewrite in Perl)
+printf '\n\nDifferentiated ressource availability per class (node=Standard/short/long, gpu=GPU, smp=Fat), (based on \"pbsnodes\")\n'
+printf '###################################################################################################################\n'
+printf '\n\tclass\tfree\tpartly\toccup.\tunavail.\n\t`````\t````\t``````\t``````\t````````\n' ## header
+## short nodes
+##^^^^^^^^^^^^^
+pbsnodes | awk '$1 ~ /^node[0-9]{3}$/ {nr[NR+1]; nr[NR+5]}; NR in nr {printf $0"\n"}' | awk '{print last,$0; last=$0}' | awk '/free      status/ { ++count } END {printf "\tnode\t" count}'
+pbsnodes | awk '$1 ~ /^node[0-9]{3}$/ {nr[NR+5]}; NR in nr' | awk '$1 ~ /jobs/ && $3 !~ /0-27/ { ++count } END {printf "\t" count}'
+pbsnodes | awk '$1 ~ /^node[0-9]{3}$/ {nr[NR+5]}; NR in nr' | awk '$1 ~ /jobs/ && $3 ~ /0-27/ { ++count } END {printf "\t" count}'
+pbsnodes | awk '$1 ~ /^node[0-9]{3}$/ {nr[NR+1]}; NR in nr' | awk '$1 ~ /state/ && $3 ~ /down|offline|unknown/ { ++count } END {printf "\t" count "\n"}'
+## gpu nodes
+##^^^^^^^^^^^
+pbsnodes | awk '$1 ~ /^gpu[0-9]{3}$/ {nr[NR+1]; nr[NR+5]}; NR in nr {printf $0"\n"}' | awk '{print last,$0; last=$0}' | awk '/free      status/ { ++count } END {printf "\tgpu\t" count}'
+pbsnodes | awk '$1 ~ /^gpu[0-9]{3}$/ {nr[NR+5]}; NR in nr' | awk '$1 ~ /jobs/ && $3 !~ /0-27/ { ++count } END {printf "\t" count}'
+pbsnodes | awk '$1 ~ /^gpu[0-9]{3}$/ {nr[NR+5]}; NR in nr' | awk '$1 ~ /jobs/ && $3 ~ /0-27/ { ++count } END {printf "\t" count}'
+pbsnodes | awk '$1 ~ /^gpu[0-9]{3}$/ {nr[NR+1]}; NR in nr' | awk '$1 ~ /state/ && $3 ~ /down|offline|unknown/ { ++count } END {printf "\t" count "\n"}'
+## fat nodes
+##^^^^^^^^^^^
+pbsnodes | awk '$1 ~ /^smp[0-9]{2}$/ {nr[NR+1]; nr[NR+5]}; NR in nr {printf $0"\n"}' | awk '{print last,$0; last=$0}' | awk '/free      status/ { ++count } END {printf "\tsmp\t" count}'
+pbsnodes | awk '$1 ~ /^smp[0-9]{2}$/ {nr[NR+5]}; NR in nr' | awk '$1 ~ /jobs/ && $3 !~ /0-27/ { ++count } END {printf "\t" count}'
+pbsnodes | awk '$1 ~ /^smp[0-9]{2}$/ {nr[NR+5]}; NR in nr' | awk '$1 ~ /jobs/ && $3 ~ /0-27/ { ++count } END {printf "\t" count}'
+pbsnodes | awk '$1 ~ /^smp[0-9]{2}$/ {nr[NR+1]}; NR in nr' | awk '$1 ~ /state/ && $3 ~ /down|offline|unknown/ { ++count } END {printf "\t" count "\n"}'
+
+
+printf '\n\nCurrent status of queued and running jobs (based on \"showq\", \"checkjob\" and \"showstart\")\n'
+printf '########################################################################################\n'
+# idle queue, first column(s) matching 7 digits (job-id), extract first seven characters (sometimes job id is followed by an *)
+jobq=( $(showq -i -w user=${LOGNAME}|awk '$1 ~ /^[0-9]{7}/ {print substr ($1,1,8)}') )		# first pos.: `${jobq[0]}`; all: `${jobq[@]}`
+# similar for active jobs ...
+joba=( $(showq -r -w user=${LOGNAME}|awk '$1 ~ /^[0-9]{7}/ {print substr ($1,1,8)}') )
+
+if [[ -n $jobq ]]
+then
+	printf '\n\tQueued:\n\t```````\n'
+	for i in "${jobq[@]}"
+	do
+		checkjob $i | awk -v jobid="$i" '$1 ~ /^AName/ {print "\tJob ID:\t\t" jobid "\n\tJob name:\t" $2}'
+		showstart $i | awk '$4 ~ /start/ {print "\tEst. start:\t" $6 " ("$8, $9" "$10", "$11")\n"}'
+	done
+else
+	printf '\n\tCurrently no queued jobs.\n'
+fi
+
+if [[ -n $joba ]]
+then
+	printf '\n\tRunning:\n\t````````\n'
+	for i in "${joba[@]}"
+	do
+		checkjob $i | awk -v jobid="$i" '$1 ~ /^AName/ {print "\tJob ID:\t\t" jobid "\n\tJob name:\t" $2}'
+		checkjob $i | awk -F: '$1 ~ /^\[/ {print "\tCompute node:\t" substr($1,2)}'
+		checkjob $i | awk -F: '$1 ~ /^\[/ {print "\tProcessors #:\t" substr($2, 1, length($2)-1)}'
+		showstart $i | awk '$4 ~ /completion/ {print "\tFinished in:\t" $6 " ("$8, $9" "$10", "$11")\n"}'
+	done
+else
+	printf '\n\tCurrently no running jobs.\n\n'
+fi
+
+printf '\nFree space in work directory\n'
+printf '############################\n'
+df -h /beegfs/work/ | awk '$1 !~ /Filesystem/ {printf "\n\t%4s of %4s (%2.0f%) free on %-s \n\n", $4, $2, $4/$2*100, $6} '
